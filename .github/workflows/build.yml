@@ -6,11 +6,18 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -35,9 +42,10 @@ jobs:
             arch: arm64
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
       with:
-        fetch-depth: 0  # This ensures git describe works correctly
+        fetch-depth: 0
 
     - name: Set up GCC
       if: matrix.os == 'ubuntu-latest'
@@ -55,6 +63,12 @@ jobs:
         GOOS: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'darwin' || 'linux' }}
         GOARCH: ${{ matrix.arch }}
 
+    - name: Test binary
+      if: matrix.os != 'windows-latest' && matrix.arch == matrix.os == 'ubuntu-latest' && matrix.arch == 'amd64'
+      run: |
+        chmod +x ${{ matrix.output_name }}
+        ./${{ matrix.output_name }} --version
+
     - name: Rename binary
       run: |
         mv ${{ matrix.output_name }} ${{ matrix.asset_name }}
@@ -65,15 +79,19 @@ jobs:
       with:
         name: ${{ matrix.asset_name }}
         path: ${{ matrix.asset_name }}
+        if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
 
     steps:
-    - uses: actions/checkout@v3
-    
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
     - name: Download artifacts
       uses: actions/download-artifact@v3
 
@@ -81,8 +99,13 @@ jobs:
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+    - name: Display structure of downloaded files
+      run: ls -R
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         files: |
           fconcat_linux_amd64/fconcat_linux_amd64
@@ -93,5 +116,38 @@ jobs:
         name: Release ${{ steps.get_version.outputs.VERSION }}
         draft: false
         prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        generate_release_notes: true
+        fail_on_unmatched_files: false
+        body: |
+          ## fconcat ${{ steps.get_version.outputs.VERSION }}
+
+          ### Installation
+          ```bash
+          curl -sSL https://raw.githubusercontent.com/sonemaro/fconcat/main/scripts/install.sh | bash
+          ```
+
+          ### Downloads
+          - Linux (x64): `fconcat_linux_amd64`
+          - Linux (ARM64): `fconcat_linux_arm64`
+          - Windows: `fconcat_windows_amd64.exe`
+          - macOS (x64): `fconcat_darwin_amd64`
+          - macOS (ARM64/M1/M2): `fconcat_darwin_arm64`
+
+          ### SHA256 Checksums
+          ```
+          ${shasum -a 256 fconcat_*/fconcat_* | awk '{print $1 "  " $2}'}
+          ```
+
+  cleanup:
+    needs: release
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - uses: geekyeggo/delete-artifact@v2
+      with:
+        name: |
+          fconcat_linux_amd64
+          fconcat_linux_arm64
+          fconcat_windows_amd64.exe
+          fconcat_darwin_amd64
+          fconcat_darwin_arm64
