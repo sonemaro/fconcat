@@ -1,0 +1,97 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            output_name: fconcat
+            asset_name: fconcat_linux_amd64
+            arch: amd64
+          - os: ubuntu-latest
+            output_name: fconcat
+            asset_name: fconcat_linux_arm64
+            arch: arm64
+          - os: windows-latest
+            output_name: fconcat.exe
+            asset_name: fconcat_windows_amd64.exe
+            arch: amd64
+          - os: macos-latest
+            output_name: fconcat
+            asset_name: fconcat_darwin_amd64
+            arch: amd64
+          - os: macos-latest
+            output_name: fconcat
+            asset_name: fconcat_darwin_arm64
+            arch: arm64
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # This ensures git describe works correctly
+
+    - name: Set up GCC
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc make
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        fi
+
+    - name: Build
+      run: make
+      env:
+        GOOS: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'darwin' || 'linux' }}
+        GOARCH: ${{ matrix.arch }}
+
+    - name: Rename binary
+      run: |
+        mv ${{ matrix.output_name }} ${{ matrix.asset_name }}
+      shell: bash
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.asset_name }}
+        path: ${{ matrix.asset_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          fconcat_linux_amd64/fconcat_linux_amd64
+          fconcat_linux_arm64/fconcat_linux_arm64
+          fconcat_windows_amd64.exe/fconcat_windows_amd64.exe
+          fconcat_darwin_amd64/fconcat_darwin_amd64
+          fconcat_darwin_arm64/fconcat_darwin_arm64
+        name: Release ${{ steps.get_version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
