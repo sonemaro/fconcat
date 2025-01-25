@@ -59,6 +59,5 @@ MIT
 
 ---
 Made with 🍵 by [@sonemaro](https://github.com/sonemaro)
-```
 
 Simple, clean, and covers everything someone needs to get started! Want me to add or change anything?
