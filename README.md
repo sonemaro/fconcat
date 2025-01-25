@@ -1,4 +1,3 @@
-```markdown
 # fconcat 📚
 
 Stupidly simple tool to dump all your files into one big file. Shows folder structure at the top!
