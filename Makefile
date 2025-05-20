@@ -1,7 +1,27 @@
 # Compiler settings
 CC ?= gcc
-CFLAGS = -Wall -Wextra -Werror -O2
-LDFLAGS = -static
+CFLAGS = -Wall -Wextra -O2
+
+# Platform-specific settings
+ifeq ($(OS),Windows_NT)
+    TARGET := fconcat.exe
+    RM = del /Q
+    # No static linking on Windows
+    LDFLAGS =
+else
+    TARGET = fconcat
+    RM = rm -f
+    
+    # Check if macOS (Darwin)
+    UNAME_S := $(shell uname -s 2>/dev/null || echo "unknown")
+    ifeq ($(UNAME_S),Darwin)
+        # No static linking on macOS
+        LDFLAGS = 
+    else
+        # Static linking only on Linux
+        LDFLAGS = -static
+    endif
+endif
 
 # For cross-compilation support
 ifeq ($(CROSS_COMPILE),aarch64-linux-gnu-)
@@ -9,22 +29,12 @@ ifeq ($(CROSS_COMPILE),aarch64-linux-gnu-)
 endif
 
 # Executable name
-TARGET = fconcat
 SRCS = src/main.c src/concat.c
 OBJS = $(SRCS:.c=.o)
 
 # Get version from git tag
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "unknown")
 CFLAGS += -DVERSION=\"$(VERSION)\"
-
-# Platform-specific adjustments
-ifeq ($(OS),Windows_NT)
-    TARGET := $(TARGET).exe
-    RM = del /Q
-    LDFLAGS = 
-else
-    RM = rm -f
-endif
 
 .PHONY: all clean install
 
@@ -42,9 +52,3 @@ clean:
 install:
 	mkdir -p $(DESTDIR)/usr/local/bin
 	cp $(TARGET) $(DESTDIR)/usr/local/bin/
-
-debug:
-	@echo "CC: $(CC)"
-	@echo "CFLAGS: $(CFLAGS)"
-	@echo "LDFLAGS: $(LDFLAGS)"
-	@echo "VERSION: $(VERSION)"
