@@ -151,11 +151,4 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
-    - uses: geekyeggo/delete-artifact@v2
-      with:
-        name: |
-          fconcat_linux_amd64
-          fconcat_linux_arm64
-          fconcat_windows_amd64.exe
-          fconcat_darwin_amd64
-          fconcat_darwin_arm64
+    - run: echo "Artifacts will be automatically deleted by GitHub's retention policy"
