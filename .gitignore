@@ -16,3 +16,15 @@ Thumbs.db
 out.txt
 *.txt
 
+fconcat
+fconcat.exe
+*.o
+bench_fconcat
+
+# IDE files
+// ...existing code...
+# Test outputs
+out.txt
+*.txt
+benchmarks/*.tmp
+

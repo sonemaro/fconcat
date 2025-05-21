@@ -43,16 +43,30 @@ void init_exclude_list(ExcludeList *excludes) {
     }
 }
 
+static int is_verbose() {
+    const char *env = getenv("FCONCAT_VERBOSE");
+    return env && (strcmp(env, "1") == 0 || strcasecmp(env, "true") == 0);
+}
+
 void add_exclude_pattern(ExcludeList *excludes, const char *pattern) {
-    if (excludes->count >= MAX_EXCLUDES) return;
+    if (excludes->count >= MAX_EXCLUDES) {
+        fprintf(stderr, "Warning: Maximum number of exclude patterns (%d) reached, ignoring: %s\n", MAX_EXCLUDES, pattern);
+        return;
+    }
     excludes->patterns[excludes->count] = strdup(pattern);
+    if (excludes->patterns[excludes->count] == NULL) {
+        fprintf(stderr, "Memory allocation failed for exclude pattern: %s\n", pattern);
+        exit(EXIT_FAILURE);
+    }
     excludes->count++;
 }
 
 void free_exclude_list(ExcludeList *excludes) {
     for (int i = 0; i < excludes->count; i++) {
         free(excludes->patterns[i]);
+        excludes->patterns[i] = NULL;
     }
+    excludes->count = 0;
 }
 
 static int is_excluded(const char *path, ExcludeList *excludes) {
@@ -63,6 +77,7 @@ static int is_excluded(const char *path, ExcludeList *excludes) {
 }
 
 static int safe_path_join(char *dest, size_t dest_size, const char *path1, const char *path2) {
+    if (dest_size == 0) return -1;
     size_t len1 = strlen(path1);
     size_t len2 = strlen(path2);
     size_t required_size = len1 + (len1 > 0 ? 1 : 0) + len2 + 1; // path1 + '/' + path2 + '\0'
@@ -84,22 +99,45 @@ static int safe_path_join(char *dest, size_t dest_size, const char *path1, const
     return 0;
 }
 
+void format_size(unsigned long long size, char *buffer, size_t buffer_size) {
+    static const char *units[] = {"B", "KB", "MB", "GB", "TB", "PB", "EB"};
+    int unit_index = 0;
+    double size_d = (double)size;
+    
+    while (size_d >= 1024.0 && unit_index < 6) {
+        size_d /= 1024.0;
+        unit_index++;
+    }
+    
+    if (unit_index == 0) {
+        snprintf(buffer, buffer_size, "%llu %s", size, units[unit_index]);
+    } else {
+        snprintf(buffer, buffer_size, "%.2f %s", size_d, units[unit_index]);
+    }
+}
+
 #if defined(_WIN32) || defined(_WIN64)
 
-void list_files(FILE *output, const char *base_path, const char *current_path, int level, ExcludeList *excludes) {
+unsigned long long list_files(FILE *output, const char *base_path, const char *current_path, 
+                             int level, ExcludeList *excludes, int show_size, 
+                             unsigned long long *total_size) {
     WIN32_FIND_DATA findData;
     HANDLE hFind;
     char search_path[MAX_PATH];
     char full_path[MAX_PATH];
+    unsigned long long dir_size = 0;
 
     if (safe_path_join(search_path, sizeof(search_path), base_path, current_path) < 0) {
         fprintf(stderr, "Path too long: %s\\%s\n", base_path, current_path);
-        return;
+        return 0;
     }
     strncat(search_path, "\\*", sizeof(search_path) - strlen(search_path) - 1);
 
     hFind = FindFirstFile(search_path, &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return;
+    if (hFind == INVALID_HANDLE_VALUE) {
+        if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open directory: %s\n", search_path);
+        return 0;
+    }
 
     do {
         if (strcmp(findData.cFileName, ".") == 0 || strcmp(findData.cFileName, "..") == 0)
@@ -116,20 +154,37 @@ void list_files(FILE *output, const char *base_path, const char *current_path, i
             relative_path[sizeof(relative_path) - 1] = '\0';
         }
 
-        if (is_excluded(relative_path, excludes))
+        if (is_excluded(relative_path, excludes)) {
+            if (is_verbose()) fprintf(stderr, "[fconcat] Excluded: %s\n", relative_path);
             continue;
+        }
 
         for (int i = 0; i < level; i++) fprintf(output, "  ");
 
         if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             fprintf(output, "📁 %s\\\n", findData.cFileName);
-            list_files(output, base_path, relative_path, level + 1, excludes);
+            unsigned long long subdir_size = list_files(output, base_path, relative_path, level + 1, excludes, show_size, total_size);
+            dir_size += subdir_size;
         } else {
-            fprintf(output, "📄 %s\n", findData.cFileName);
+            LARGE_INTEGER fileSize;
+            fileSize.LowPart = findData.nFileSizeLow;
+            fileSize.HighPart = findData.nFileSizeHigh;
+            
+            if (show_size) {
+                char size_buf[32];
+                format_size(fileSize.QuadPart, size_buf, sizeof(size_buf));
+                fprintf(output, "📄 [%s] %s\n", size_buf, findData.cFileName);
+            } else {
+                fprintf(output, "📄 %s\n", findData.cFileName);
+            }
+            
+            dir_size += fileSize.QuadPart;
+            if (total_size) *total_size += fileSize.QuadPart;
         }
     } while (FindNextFile(hFind, &findData));
 
     FindClose(hFind);
+    return dir_size;
 }
 
 void concat_files(FILE *output, const char *base_path, const char *current_path, ExcludeList *excludes) {
@@ -145,7 +200,10 @@ void concat_files(FILE *output, const char *base_path, const char *current_path,
     strncat(search_path, "\\*", sizeof(search_path) - strlen(search_path) - 1);
 
     hFind = FindFirstFile(search_path, &findData);
-    if (hFind == INVALID_HANDLE_VALUE) return;
+    if (hFind == INVALID_HANDLE_VALUE) {
+        if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open directory: %s\n", search_path);
+        return;
+    }
 
     do {
         if (strcmp(findData.cFileName, ".") == 0 || strcmp(findData.cFileName, "..") == 0)
@@ -174,14 +232,22 @@ void concat_files(FILE *output, const char *base_path, const char *current_path,
             concat_files(output, base_path, relative_path, excludes);
         } else {
             FILE *input = fopen(full_path, "rb");
-            if (!input) continue;
+            if (!input) {
+                if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open file: %s\n", full_path);
+                continue;
+            }
 
             fprintf(output, "// File: %s\n", relative_path);
             
             char buffer[BUFFER_SIZE];
             size_t bytes_read;
             while ((bytes_read = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-                fwrite(buffer, 1, bytes_read, output);
+                if (fwrite(buffer, 1, bytes_read, output) != bytes_read) {
+                    fprintf(stderr, "Error writing to output file.\n");
+                    fclose(input);
+                    closedir(dir);
+                    return;
+                }
             }
             fprintf(output, "\n\n");
             fclose(input);
@@ -193,19 +259,23 @@ void concat_files(FILE *output, const char *base_path, const char *current_path,
 
 #else
 
-void list_files(FILE *output, const char *base_path, const char *current_path, int level, ExcludeList *excludes) {
+unsigned long long list_files(FILE *output, const char *base_path, const char *current_path, 
+                             int level, ExcludeList *excludes, int show_size, 
+                             unsigned long long *total_size) {
     char path[MAX_PATH];
     struct dirent *dp;
     struct stat statbuf;
     DIR *dir;
+    unsigned long long dir_size = 0;
 
     if (safe_path_join(path, sizeof(path), base_path, current_path) < 0) {
         fprintf(stderr, "Path too long: %s/%s\n", base_path, current_path);
-        return;
+        return 0;
     }
 
     if (!(dir = opendir(path))) {
-        return;
+        if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open directory: %s\n", path);
+        return 0;
     }
 
     while ((dp = readdir(dir))) {
@@ -230,23 +300,38 @@ void list_files(FILE *output, const char *base_path, const char *current_path, i
             relative_path[sizeof(relative_path) - 1] = '\0';
         }
 
-        if (is_excluded(relative_path, excludes))
+        if (is_excluded(relative_path, excludes)) {
+            if (is_verbose()) fprintf(stderr, "[fconcat] Excluded: %s\n", relative_path);
             continue;
+        }
 
-        if (stat(full_path, &statbuf) == -1)
+        if (stat(full_path, &statbuf) == -1) {
+            if (is_verbose()) fprintf(stderr, "[fconcat] Cannot stat: %s\n", full_path);
             continue;
+        }
 
         for (int i = 0; i < level; i++) fprintf(output, "  ");
 
         if (S_ISDIR(statbuf.st_mode)) {
             fprintf(output, "📁 %s/\n", dp->d_name);
-            list_files(output, base_path, relative_path, level + 1, excludes);
+            unsigned long long subdir_size = list_files(output, base_path, relative_path, level + 1, excludes, show_size, total_size);
+            dir_size += subdir_size;
         } else {
-            fprintf(output, "📄 %s\n", dp->d_name);
+            if (show_size) {
+                char size_buf[32];
+                format_size(statbuf.st_size, size_buf, sizeof(size_buf));
+                fprintf(output, "📄 [%s] %s\n", size_buf, dp->d_name);
+            } else {
+                fprintf(output, "📄 %s\n", dp->d_name);
+            }
+            
+            dir_size += statbuf.st_size;
+            if (total_size) *total_size += statbuf.st_size;
         }
     }
 
     closedir(dir);
+    return dir_size;
 }
 
 void concat_files(FILE *output, const char *base_path, const char *current_path, ExcludeList *excludes) {
@@ -261,6 +346,7 @@ void concat_files(FILE *output, const char *base_path, const char *current_path,
     }
 
     if (!(dir = opendir(path))) {
+        if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open directory: %s\n", path);
         return;
     }
 
@@ -286,24 +372,36 @@ void concat_files(FILE *output, const char *base_path, const char *current_path,
             relative_path[sizeof(relative_path) - 1] = '\0';
         }
 
-        if (is_excluded(relative_path, excludes))
+        if (is_excluded(relative_path, excludes)) {
+            if (is_verbose()) fprintf(stderr, "[fconcat] Excluded: %s\n", relative_path);
             continue;
+        }
 
-        if (stat(full_path, &statbuf) == -1)
+        if (stat(full_path, &statbuf) == -1) {
+            if (is_verbose()) fprintf(stderr, "[fconcat] Cannot stat: %s\n", full_path);
             continue;
+        }
 
         if (S_ISDIR(statbuf.st_mode)) {
             concat_files(output, base_path, relative_path, excludes);
         } else {
             FILE *input = fopen(full_path, "rb");
-            if (!input) continue;
+            if (!input) {
+                if (is_verbose()) fprintf(stderr, "[fconcat] Cannot open file: %s\n", full_path);
+                continue;
+            }
 
             fprintf(output, "// File: %s\n", relative_path);
-            
+
             char buffer[BUFFER_SIZE];
             size_t bytes_read;
             while ((bytes_read = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-                fwrite(buffer, 1, bytes_read, output);
+                if (fwrite(buffer, 1, bytes_read, output) != bytes_read) {
+                    fprintf(stderr, "Error writing to output file.\n");
+                    fclose(input);
+                    closedir(dir);
+                    return;
+                }
             }
             fprintf(output, "\n\n");
             fclose(input);
