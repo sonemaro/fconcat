@@ -46,21 +46,29 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # Windows-specific setup
-    - name: Setup MinGW (Windows)
+    - name: Setup MSYS2 (Windows)
       if: matrix.platform == 'windows'
-      uses: egor-tensin/setup-mingw@v2
+      uses: msys2/setup-msys2@v2
       with:
-        platform: x64
+        msystem: mingw64
+        update: true
+        install: >-
+          mingw-w64-x86_64-gcc
+          make
     
-    # Fix for macOS static linking issue
     - name: Modify Makefile for macOS
       if: matrix.platform == 'darwin'
       run: |
         sed -i.bak 's/-static//' Makefile
       shell: bash
     
-    - name: Build
+    - name: Build (Windows)
+      if: matrix.platform == 'windows'
+      shell: msys2 {0}
+      run: make
+    
+    - name: Build (Non-Windows)
+      if: matrix.platform != 'windows'
       run: make
       
     - name: Rename binary
