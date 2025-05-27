@@ -46,10 +46,6 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Set VERSION variable
-      run: echo "VERSION=$(git describe --tags --always)" >> $GITHUB_ENV
-      shell: bash
-    
     # Windows-specific setup
     - name: Setup MinGW (Windows)
       if: matrix.platform == 'windows'
@@ -57,55 +53,27 @@ jobs:
       with:
         platform: x64
     
-    # Ubuntu-specific setup for ARM64 cross-compilation
-    - name: Install ARM64 cross-compiler (Ubuntu)
-      if: matrix.platform == 'linux' && matrix.arch == 'arm64'
+    # Fix for macOS static linking issue
+    - name: Modify Makefile for macOS
+      if: matrix.platform == 'darwin'
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-    
-    # Create a platform-specific Makefile
-    - name: Create platform Makefile
-      run: |
-        cat > Makefile.platform << EOF
-        # Platform-specific configurations
-        UNAME := $(uname)
-        CC = gcc
-        
-        ifeq ($(UNAME), Darwin)
-          # macOS specific flags
-          LDFLAGS =
-        else ifeq ($(UNAME), Linux)
-          ifeq ($(GOARCH), arm64)
-            CC = aarch64-linux-gnu-gcc
-          endif
-          LDFLAGS = -static
-        else
-          # Windows specific flags
-          CC = gcc
-          LDFLAGS =
-        endif
-        
-        # Export these variables so they're available to the main Makefile
-        export CC
-        export LDFLAGS
-        EOF
+        sed -i.bak 's/-static//' Makefile
       shell: bash
     
-    # Include the platform-specific Makefile and build
     - name: Build
+      run: make
+      
+    - name: Rename binary
       run: |
-        include Makefile.platform
-        
-        # Build with the environment's correct compiler
-        $(CC) -Wall -Wextra -O2 -DVERSION=\"${{ env.VERSION }}\" -c src/main.c -o src/main.o
-        $(CC) -Wall -Wextra -O2 -DVERSION=\"${{ env.VERSION }}\" -c src/concat.c -o src/concat.o
-        $(CC) src/main.o src/concat.o $(LDFLAGS) -o ${{ matrix.artifact }}
+        if [ -f "fconcat" ]; then
+          mv fconcat ${{ matrix.artifact }}
+        elif [ -f "fconcat.exe" ]; then
+          mv fconcat.exe ${{ matrix.artifact }}
+        fi
       shell: bash
     
-    # Upload the compiled binary as an artifact
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v2
       with:
         name: ${{ matrix.artifact }}
         path: ${{ matrix.artifact }}
@@ -119,7 +87,7 @@ jobs:
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v2
     
     - name: Create Release
       id: create_release
