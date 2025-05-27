@@ -73,7 +73,7 @@ jobs:
       shell: bash
     
     - name: Upload artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: ${{ matrix.artifact }}
         path: ${{ matrix.artifact }}
@@ -87,7 +87,7 @@ jobs:
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v3
     
     - name: Create Release
       id: create_release
