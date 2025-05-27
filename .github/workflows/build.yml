@@ -46,31 +46,25 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Setup MSYS2 (Windows)
-      if: matrix.platform == 'windows'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: mingw64
-        update: true
-        install: >-
-          mingw-w64-x86_64-gcc
-          make
+    # Set up ARM64 for Linux
+    - name: Set up GCC for ARM64
+      if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+        echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
     
+    # Fix for macOS static linking issue
     - name: Modify Makefile for macOS
       if: matrix.platform == 'darwin'
       run: |
         sed -i.bak 's/-static//' Makefile
       shell: bash
     
-    - name: Build (Windows)
-      if: matrix.platform == 'windows'
-      shell: msys2 {0}
+    # Simple build step for all platforms (including Windows)
+    - name: Build
       run: make
     
-    - name: Build (Non-Windows)
-      if: matrix.platform != 'windows'
-      run: make
-      
     - name: Rename binary
       run: |
         if [ -f "fconcat" ]; then
