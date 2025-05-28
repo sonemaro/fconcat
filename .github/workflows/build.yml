@@ -78,7 +78,8 @@ jobs:
       shell: cmd
       run: |
         set PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%
-        mingw32-make
+        set CC=gcc
+        C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\mingw32-make.exe CC=gcc
     
     # Build step for non-Windows
     - name: Build (non-Windows)
