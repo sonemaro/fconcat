@@ -62,24 +62,25 @@ jobs:
         sed -i.bak 's/-static//' Makefile
       shell: bash
     
-    # Windows-specific setup
-    - name: Set up Windows build environment
-      if: matrix.platform == 'windows'
-      run: |
-        choco install mingw --no-progress --yes
-        echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        # Verify GCC is available
-        refreshenv
-        gcc --version
-    
-    # Build step for Windows
+    # Windows-specific build
     - name: Build (Windows)
       if: matrix.platform == 'windows'
-      shell: cmd
+      shell: powershell
       run: |
-        set PATH=C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;%PATH%
-        set CC=gcc
-        C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\mingw32-make.exe CC=gcc
+        # Install GCC
+        choco install mingw --no-progress --yes
+        
+        # Compile files manually (bypass make)
+        $env:PATH = "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin;$env:PATH"
+        
+        # Check if gcc is available
+        gcc --version
+        
+        # Compile directly without using make
+        $version = $(git describe --tags --always)
+        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/main.c -o src/main.o
+        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/concat.c -o src/concat.o
+        gcc src/main.o src/concat.o -o fconcat.exe
     
     # Build step for non-Windows
     - name: Build (non-Windows)
