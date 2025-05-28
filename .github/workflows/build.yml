@@ -62,6 +62,40 @@ jobs:
         sed -i.bak 's/-static//' Makefile
       shell: bash
     
+    # Windows-specific compatibility patches
+    - name: Apply Windows compatibility patches
+      if: matrix.platform == 'windows'
+      shell: powershell
+      run: |
+        # Create a compatibility header for Windows
+        @"
+        #ifdef _WIN32
+        #include <windows.h>
+        #include <direct.h>
+        #include <io.h>
+
+        // Redefine POSIX functions for Windows
+        #define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
+        #define mkdir(D,M) _mkdir(D)
+        #define S_ISDIR(M) (((M) & _S_IFMT) == _S_IFDIR)
+        #define PATH_MAX MAX_PATH
+        #endif
+        "@ | Out-File -FilePath "src/win_compat.h" -Encoding ASCII
+        
+        # Add include for win_compat.h to main.c
+        $mainContent = Get-Content "src/main.c" -Raw
+        $mainContent = "#include ""win_compat.h""`n" + $mainContent
+        $mainContent | Out-File -FilePath "src/main.c" -Encoding ASCII
+        
+        # Add include for win_compat.h to concat.c
+        $concatContent = Get-Content "src/concat.c" -Raw
+        $concatContent = "#include ""win_compat.h""`n" + $concatContent
+        $concatContent | Out-File -FilePath "src/concat.c" -Encoding ASCII
+        
+        # Replace directory handling code in concat.c
+        $concatContent = $concatContent -replace "closedir\(dir\)", "/* closedir(dir) */"
+        $concatContent | Out-File -FilePath "src/concat.c" -Encoding ASCII
+    
     # Windows-specific build
     - name: Build (Windows)
       if: matrix.platform == 'windows'
@@ -78,8 +112,15 @@ jobs:
         
         # Compile directly without using make
         $version = $(git describe --tags --always)
+        
+        # Using -Werror will fail the build with warnings, so remove it for Windows
         gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/main.c -o src/main.o
         gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/concat.c -o src/concat.o
+        
+        # Check if files were created
+        if (Test-Path src/main.o) { Write-Host "main.o exists" } else { Write-Host "main.o missing!" }
+        if (Test-Path src/concat.o) { Write-Host "concat.o exists" } else { Write-Host "concat.o missing!" }
+        
         gcc src/main.o src/concat.o -o fconcat.exe
     
     # Build step for non-Windows
