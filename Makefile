@@ -1,12 +1,26 @@
 # Compiler settings
 CC ?= gcc
-CFLAGS = -Wall -Wextra -Werror -O3 -march=native
+CFLAGS = -Wall -Wextra -Werror -O3
 LDFLAGS = -static -pthread
 LIBS = -lm
 
-# For cross-compilation support
+# Detect if we're cross-compiling
 ifeq ($(CROSS_COMPILE),aarch64-linux-gnu-)
     CC = aarch64-linux-gnu-gcc
+    # Use generic ARM64 optimization for cross-compilation
+    CFLAGS += -march=armv8-a
+else
+    # Use native optimization for native compilation
+    CFLAGS += -march=native
+endif
+
+# For other cross-compilation scenarios
+ifneq (,$(findstring aarch64,$(CC)))
+    ifneq (,$(findstring linux-gnu,$(CC)))
+        # Cross-compiling for ARM64
+        CFLAGS += -march=armv8-a
+        CFLAGS := $(filter-out -march=native,$(CFLAGS))
+    endif
 endif
 
 # Executable name
@@ -18,7 +32,7 @@ OBJS = $(SRCS:.c=.o)
 BENCH_DIR = benchmarks
 BENCH_SRCS = $(BENCH_DIR)/bench_concat.c
 BENCH_TARGET = bench_fconcat
-BENCH_CFLAGS = -O3 -march=native -DNDEBUG -pthread
+BENCH_CFLAGS = -O3 -DNDEBUG -pthread
 BENCH_ITERATIONS ?= 1000
 BENCH_FILE_SIZE ?= 10M
 
@@ -63,14 +77,25 @@ profile: LDFLAGS += -pg
 profile: $(TARGET)
 
 # Optimized build for releases
-release: CFLAGS = -Wall -Wextra -Werror -O3 -march=native -DNDEBUG -flto
+release: CFLAGS = -Wall -Wextra -Werror -O3 -DNDEBUG -flto
 release: LDFLAGS += -flto
+release: clean-march-flags
 release: $(TARGET)
 
 # Debug build
 debug: CFLAGS = -Wall -Wextra -g -O0 -DDEBUG
 debug: LDFLAGS = -pthread
+debug: clean-march-flags  
 debug: $(TARGET)
+
+# Helper target to clean march flags and add appropriate ones
+clean-march-flags:
+	$(eval CFLAGS := $(filter-out -march=native -march=armv8-a,$(CFLAGS)))
+	$(eval ifneq (,$(findstring aarch64,$(CC)))
+		CFLAGS += -march=armv8-a
+	else
+		CFLAGS += -march=native
+	endif)
 
 benchmark: $(BENCH_TARGET)
 	@echo "Running benchmarks..."
