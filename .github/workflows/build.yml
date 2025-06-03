@@ -113,13 +113,22 @@ jobs:
         # Compile directly without using make
         $version = $(git describe --tags --always)
         
-        # Compile with static flags
-        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -static -static-libgcc -static-libstdc++ -c src/main.c -o src/main.o
-        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -static -static-libgcc -static-libstdc++ -c src/concat.c -o src/concat.o
+        # Compile object files
+        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/main.c -o src/main.o
+        gcc -Wall -Wextra -O2 -DVERSION="`"$version`"" -c src/concat.c -o src/concat.o
         
-        # Link everything statically
-        gcc src/main.o src/concat.o -static -static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -lm -Wl,-Bdynamic -o fconcat.exe
+        # Simple static linking
+        gcc src/main.o src/concat.o -static -lpthread -lm -o fconcat.exe
         
+        # Verify the binary exists
+        if (Test-Path fconcat.exe) { 
+            Write-Host "Binary created successfully"
+            $size = (Get-Item fconcat.exe).Length
+            Write-Host "Binary size: $size bytes"
+        } else {
+            Write-Host "Binary creation failed"
+            exit 1
+        }
     
     # Build step for non-Windows
     - name: Build (non-Windows)
