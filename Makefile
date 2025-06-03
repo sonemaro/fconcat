@@ -33,8 +33,11 @@ ifeq ($(OS),Windows_NT)
     LDFLAGS = -pthread
 else
     RM = rm -f
-    # Add real-time extensions for clock_gettime
-    LIBS += -lrt
+    # Add real-time extensions for clock_gettime on Linux only
+    UNAME_S := $(shell uname -s)
+    ifeq ($(UNAME_S),Linux)
+        LIBS += -lrt
+    endif
 endif
 
 .PHONY: all clean install benchmark bench-clean bench-report profile
