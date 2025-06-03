@@ -1,10 +1,17 @@
+#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include "concat.h"
 
-#define FCONCAT_VERSION "1.1.0"
+#define FCONCAT_VERSION "2.0.0"
 #define FCONCAT_COPYRIGHT "Copyright (c) 2025 Soroush Khosravi Dehaghi"
 
 static int is_verbose()
@@ -32,7 +39,6 @@ static char *get_absolute_path(const char *path, char *abs_path, size_t abs_path
         return abs_path;
     }
 
-    // If realpath fails (e.g., file doesn't exist yet), copy the path as is
     strncpy(abs_path, path, abs_path_size - 1);
     abs_path[abs_path_size - 1] = '\0';
     return abs_path;
@@ -49,7 +55,6 @@ static char *get_relative_path(const char *base_dir, const char *target_path)
 
     size_t base_len = strlen(abs_base);
 
-    // Ensure base path ends with separator
     if (base_len > 0 && abs_base[base_len - 1] != PATH_SEP)
     {
         abs_base[base_len] = PATH_SEP;
@@ -57,7 +62,6 @@ static char *get_relative_path(const char *base_dir, const char *target_path)
         base_len++;
     }
 
-    // Check if target is inside base
     if (strncmp(abs_target, abs_base, base_len) == 0)
     {
         return strdup(abs_target + base_len);
@@ -68,9 +72,9 @@ static char *get_relative_path(const char *base_dir, const char *target_path)
 
 void print_header()
 {
-    printf("fconcat v%s - Concatenate directory structure and files\n", FCONCAT_VERSION);
+    printf("fconcat v%s - Multi-threaded file concatenator with streaming output\n", FCONCAT_VERSION);
     printf("%s\n", FCONCAT_COPYRIGHT);
-    printf("======================================================\n\n");
+    printf("==================================================================\n\n");
 }
 
 void print_usage(const char *program_name)
@@ -81,7 +85,8 @@ void print_usage(const char *program_name)
             "\n"
             "Description:\n"
             "  fconcat recursively scans <input_directory>, writes a tree view of its structure,\n"
-            "  and concatenates the contents of all files into <output_file>.\n"
+            "  and concatenates the contents of all files into <output_file> using multi-threading\n"
+            "  and streaming output for optimal performance.\n"
             "\n"
             "Options:\n"
             "  <input_directory>     Path to the directory to scan and concatenate.\n"
@@ -93,6 +98,12 @@ void print_usage(const char *program_name)
             "  --binary-skip         Skip binary files entirely (default behavior).\n"
             "  --binary-include      Include binary files in concatenation.\n"
             "  --binary-placeholder  Show placeholder for binary files instead of content.\n"
+            "  --symlinks <mode>     How to handle symbolic links:\n"
+            "                        skip        - Skip all symlinks (default, safe)\n"
+            "                        follow      - Follow symlinks with loop detection\n"
+            "                        include     - Include symlink targets as files\n"
+            "                        placeholder - Show symlinks as placeholders\n"
+            "  --threads <n>, -t <n> Number of worker threads (1-%d, default: %d).\n"
             "\n"
             "Environment:\n"
             "  FCONCAT_VERBOSE=1     Enable verbose logging to stderr for debugging.\n"
@@ -100,22 +111,37 @@ void print_usage(const char *program_name)
             "Examples:\n"
             "  %s ./src all.txt\n"
             "  %s ./project result.txt --exclude \"*.log\" \"build/*\" \"temp?.txt\"\n"
-            "  %s ./code output.txt --show-size --binary-placeholder\n"
+            "  %s ./code output.txt --show-size --binary-placeholder --threads 8\n"
+            "  %s ./kernel out.txt --symlinks follow --exclude \"*.o\" \"*.ko\"\n"
             "\n"
-            "Binary File Handling:\n"
-            "  By default, binary files are skipped. Use --binary-include to include them\n"
-            "  or --binary-placeholder to show a placeholder instead of content.\n"
+            "Symbolic Link Handling:\n"
+            "  skip        - Safest option, ignores all symbolic links\n"
+            "  follow      - Follows symlinks but detects and prevents infinite loops\n"
+            "  include     - Includes symlink targets as regular files (no recursion)\n"
+            "  placeholder - Shows symlinks in structure but doesn't follow them\n"
+            "\n"
+            "Performance Features:\n"
+            "  - Multi-threaded directory traversal and file processing\n"
+            "  - Streaming output for constant memory usage\n"
+            "  - Hash-table based exclude pattern matching\n"
+            "  - Platform-optimized Unicode filename support\n"
+            "  - Intelligent binary file detection\n"
+            "  - Robust symbolic link handling with loop detection\n"
             "\n"
             "Exit Codes:\n"
             "  0   Success\n"
             "  1   Error (see message)\n"
             "\n"
             "For more information, visit: https://github.com/sonemaro/fconcat\n",
+            program_name, MAX_THREADS, DEFAULT_WORKER_THREADS,
             program_name, program_name, program_name, program_name);
 }
 
 int main(int argc, char *argv[])
 {
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
     print_header();
 
     if (argc < 3)
@@ -145,7 +171,9 @@ int main(int argc, char *argv[])
     // Parse command line options
     int exclude_count = 0;
     int show_size = 0;
-    BinaryHandling binary_handling = BINARY_SKIP; // Default behavior
+    int num_threads = DEFAULT_WORKER_THREADS;
+    BinaryHandling binary_handling = BINARY_SKIP;
+    SymlinkHandling symlink_handling = SYMLINK_SKIP;
 
     for (int i = 3; i < argc; i++)
     {
@@ -168,6 +196,27 @@ int main(int argc, char *argv[])
             if (is_verbose())
                 fprintf(stderr, "[fconcat] File size display enabled\n");
         }
+        else if (strcmp(argv[i], "--threads") == 0 || strcmp(argv[i], "-t") == 0)
+        {
+            if (i + 1 < argc)
+            {
+                num_threads = atoi(argv[++i]);
+                if (num_threads < 1 || num_threads > MAX_THREADS)
+                {
+                    fprintf(stderr, "Error: Number of threads must be between 1 and %d\n", MAX_THREADS);
+                    free_exclude_list(&excludes);
+                    return EXIT_FAILURE;
+                }
+                if (is_verbose())
+                    fprintf(stderr, "[fconcat] Using %d worker threads\n", num_threads);
+            }
+            else
+            {
+                fprintf(stderr, "Error: --threads requires a number\n");
+                free_exclude_list(&excludes);
+                return EXIT_FAILURE;
+            }
+        }
         else if (strcmp(argv[i], "--binary-skip") == 0)
         {
             binary_handling = BINARY_SKIP;
@@ -186,6 +235,43 @@ int main(int argc, char *argv[])
             if (is_verbose())
                 fprintf(stderr, "[fconcat] Binary handling: placeholder\n");
         }
+        else if (strcmp(argv[i], "--symlinks") == 0)
+        {
+            if (i + 1 < argc)
+            {
+                i++;
+                if (strcmp(argv[i], "skip") == 0)
+                {
+                    symlink_handling = SYMLINK_SKIP;
+                }
+                else if (strcmp(argv[i], "follow") == 0)
+                {
+                    symlink_handling = SYMLINK_FOLLOW;
+                }
+                else if (strcmp(argv[i], "include") == 0)
+                {
+                    symlink_handling = SYMLINK_INCLUDE;
+                }
+                else if (strcmp(argv[i], "placeholder") == 0)
+                {
+                    symlink_handling = SYMLINK_PLACEHOLDER;
+                }
+                else
+                {
+                    fprintf(stderr, "Error: Invalid symlink mode '%s'. Use: skip, follow, include, or placeholder\n", argv[i]);
+                    free_exclude_list(&excludes);
+                    return EXIT_FAILURE;
+                }
+                if (is_verbose())
+                    fprintf(stderr, "[fconcat] Symlink handling: %s\n", argv[i]);
+            }
+            else
+            {
+                fprintf(stderr, "Error: --symlinks requires a mode (skip, follow, include, placeholder)\n");
+                free_exclude_list(&excludes);
+                return EXIT_FAILURE;
+            }
+        }
         else
         {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
@@ -195,16 +281,13 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Always exclude the output file to prevent infinite loops
-
-    // 1. Exclude by filename
+    // Auto-exclude output file
     const char *output_basename = get_filename(output_file);
     if (is_verbose())
         fprintf(stderr, "[fconcat] Auto-excluding output file by name: %s\n", output_basename);
     add_exclude_pattern(&excludes, output_basename);
     exclude_count++;
 
-    // 2. For current directory case, exclude by exact path
     if (strcmp(input_dir, ".") == 0)
     {
         if (is_verbose())
@@ -213,7 +296,6 @@ int main(int argc, char *argv[])
         exclude_count++;
     }
 
-    // 3. If output is in input directory, exclude by relative path
     char *relative_path = get_relative_path(input_dir, output_file);
     if (relative_path)
     {
@@ -226,9 +308,14 @@ int main(int argc, char *argv[])
 
     printf("Input directory : %s\n", input_dir);
     printf("Output file     : %s\n", output_file);
+    printf("Worker threads  : %d\n", num_threads);
     printf("Binary handling : %s\n",
            binary_handling == BINARY_SKIP ? "skip" : binary_handling == BINARY_INCLUDE ? "include"
                                                                                        : "placeholder");
+    printf("Symlink handling: %s\n",
+           symlink_handling == SYMLINK_SKIP ? "skip" : symlink_handling == SYMLINK_FOLLOW ? "follow"
+                                                   : symlink_handling == SYMLINK_INCLUDE  ? "include"
+                                                                                          : "placeholder");
     if (exclude_count > 0)
     {
         printf("Exclude patterns: %d patterns loaded\n", exclude_count);
@@ -243,39 +330,55 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    printf("Scanning directory structure...\n");
-    if (is_verbose())
-        fprintf(stderr, "[fconcat] Writing directory structure...\n");
-    if (fprintf(output, "Directory Structure:\n==================\n\n") < 0)
+    // Initialize streaming output
+    StreamingOutput streaming_output;
+    if (init_streaming_output(&streaming_output, output) != 0)
     {
-        fprintf(stderr, "Error writing to output file.\n");
+        fprintf(stderr, "Error initializing streaming output\n");
         fclose(output);
         free_exclude_list(&excludes);
         return EXIT_FAILURE;
     }
 
-    unsigned long long total_size = 0;
-    list_files(output, input_dir, "", 0, &excludes, show_size, &total_size);
-
-    // Display total size if requested
-    if (show_size)
-    {
-        char size_buf[32];
-        format_size(total_size, size_buf, sizeof(size_buf));
-        fprintf(output, "\nTotal Size: %s (%llu bytes)\n", size_buf, total_size);
-    }
-
-    printf("Concatenating file contents...\n");
+    printf("🚀 Processing directory with %d threads...\n", num_threads);
     if (is_verbose())
-        fprintf(stderr, "[fconcat] Writing file contents...\n");
-    if (fprintf(output, "\nFile Contents:\n=============\n\n") < 0)
+        fprintf(stderr, "[fconcat] Starting multi-threaded processing...\n");
+
+    // Create processing context
+    ProcessingContext ctx = {
+        .base_path = input_dir,
+        .excludes = &excludes,
+        .binary_handling = binary_handling,
+        .symlink_handling = symlink_handling,
+        .show_size = show_size,
+        .num_threads = num_threads,
+        .output = &streaming_output,
+        .pool = NULL};
+
+    // Process directory with multi-threading
+    int result = process_directory_threaded(&ctx);
+
+    if (result == 0)
     {
-        fprintf(stderr, "Error writing to output file.\n");
-        fclose(output);
-        free_exclude_list(&excludes);
-        return EXIT_FAILURE;
+        printf("✅ Directory structure processed successfully\n");
+        printf("📝 Finalizing output...\n");
+
+        // Signal that processing is complete
+        stream_output_finish(&streaming_output);
+
+        // Print statistics if verbose
+        if (ctx.pool && is_verbose())
+        {
+            print_processing_stats(ctx.pool);
+        }
     }
-    concat_files(output, input_dir, "", &excludes, binary_handling);
+    else
+    {
+        fprintf(stderr, "❌ Error during processing\n");
+    }
+
+    // Cleanup
+    destroy_streaming_output(&streaming_output);
 
     if (fclose(output) != 0)
     {
@@ -283,11 +386,42 @@ int main(int argc, char *argv[])
         free_exclude_list(&excludes);
         return EXIT_FAILURE;
     }
+
     free_exclude_list(&excludes);
 
-    printf("\nDone! Output written to '%s'.\n", output_file);
-    printf("Thank you for using fconcat.\n");
-    if (is_verbose())
-        fprintf(stderr, "[fconcat] Done.\n");
-    return EXIT_SUCCESS;
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double elapsed = (end_time.tv_sec - start_time.tv_sec) +
+                     (end_time.tv_nsec - start_time.tv_nsec) / 1000000000.0;
+
+    if (result == 0)
+    {
+        printf("\n🎉 Success! Output written to '%s'\n", output_file);
+        printf("⏱️  Processing time: %.3f seconds\n", elapsed);
+
+        if (ctx.pool)
+        {
+            unsigned long files = atomic_load(&ctx.pool->files_processed);
+            unsigned long bytes = atomic_load(&ctx.pool->bytes_processed);
+            unsigned long symlinks = atomic_load(&ctx.pool->symlinks_processed);
+
+            if (files > 0)
+            {
+                printf("📊 Performance: %.0f files/sec, %.1f MB/sec\n",
+                       files / elapsed, (bytes / elapsed) / (1024 * 1024));
+            }
+            if (symlinks > 0)
+            {
+                printf("🔗 Symlinks: %lu processed\n", symlinks);
+            }
+        }
+
+        printf("Thank you for using fconcat! 🚀\n");
+        if (is_verbose())
+            fprintf(stderr, "[fconcat] Done.\n");
+        return EXIT_SUCCESS;
+    }
+    else
+    {
+        return EXIT_FAILURE;
+    }
 }
