@@ -62,7 +62,7 @@ jobs:
         
         # Install ARM64 cross-compiler for Linux ARM64 builds
         if [ "${{ matrix.cross_compile }}" = "aarch64-linux-gnu-" ]; then
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
         fi
         
