@@ -1,0 +1,192 @@
+name: Build fconcat
+
+# This workflow uses cross-compilation for all platforms to ensure consistency
+# and simplicity. Windows binaries are cross-compiled from Linux using MinGW-w64,
+# which provides better reliability than native Windows builds.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+            artifact: fconcat_linux_amd64
+            cross_compile: ""
+            
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
+            artifact: fconcat_linux_arm64
+            cross_compile: "aarch64-linux-gnu-"
+            
+          - os: ubuntu-latest
+            platform: windows
+            arch: amd64
+            artifact: fconcat_windows_amd64.exe
+            cross_compile: "mingw64"
+            
+          - os: macos-latest
+            platform: darwin
+            arch: amd64
+            artifact: fconcat_darwin_amd64
+            cross_compile: ""
+            
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            artifact: fconcat_darwin_arm64
+            cross_compile: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    # Set up cross-compilation tools
+    - name: Set up cross-compilation tools
+      if: matrix.platform == 'linux' || matrix.platform == 'windows'
+      run: |
+        sudo apt-get update
+        
+        # Install ARM64 cross-compiler for Linux ARM64 builds
+        if [ "${{ matrix.cross_compile }}" = "aarch64-linux-gnu-" ]; then
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        fi
+        
+        # Install MinGW-w64 for Windows cross-compilation
+        if [ "${{ matrix.cross_compile }}" = "mingw64" ]; then
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+        fi
+      timeout-minutes: 5
+    
+    # Fix for macOS static linking issue
+    - name: Modify Makefile for macOS
+      if: matrix.platform == 'darwin'
+      run: |
+        sed -i.bak 's/-static//' Makefile
+      shell: bash
+    
+    
+    # Build step
+    - name: Build
+      run: |
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          # Cross-compile for Windows using our Makefile
+          make windows64
+          # The binary will be created as fconcat-win64.exe
+          if [ -f "fconcat-win64.exe" ]; then
+            mv fconcat-win64.exe fconcat.exe
+          fi
+        elif [ "${{ matrix.cross_compile }}" = "aarch64-linux-gnu-" ]; then
+          # Cross-compile for ARM64 Linux
+          make CROSS_COMPILE=aarch64-linux-gnu-
+        else
+          # Regular build
+          make
+        fi
+      shell: bash
+    
+    
+    - name: Rename binary
+      run: |
+        # Determine the correct binary name based on platform
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          if [ -f "fconcat.exe" ]; then
+            mv fconcat.exe ${{ matrix.artifact }}
+          else
+            echo "Error: Windows binary not found"
+            exit 1
+          fi
+        else
+          if [ -f "fconcat" ]; then
+            mv fconcat ${{ matrix.artifact }}
+          else
+            echo "Error: Binary not found"
+            exit 1
+          fi
+        fi
+      shell: bash
+    
+    # Verify build and show information
+    - name: Verify build
+      run: |
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          BINARY="fconcat.exe"
+        else
+          BINARY="fconcat"
+        fi
+        
+        if [ -f "$BINARY" ]; then
+          echo "✅ Build successful!"
+          echo "Binary size: $(stat -c%s "$BINARY" 2>/dev/null || stat -f%z "$BINARY" 2>/dev/null || echo "unknown") bytes"
+          echo "File type: $(file "$BINARY" 2>/dev/null || echo "file command not available")"
+          
+          # Show build configuration used
+          echo "Build configuration:"
+          echo "  Platform: ${{ matrix.platform }}"
+          echo "  Architecture: ${{ matrix.arch }}"
+          echo "  Cross-compile: ${{ matrix.cross_compile }}"
+        else
+          echo "❌ Build failed - binary not found"
+          exit 1
+        fi
+      shell: bash
+    
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact }}
+        path: ${{ matrix.artifact }}
+        retention-days: 1
+
+  # Only run release on tag pushes
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+    
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          fconcat_linux_amd64/fconcat_linux_amd64
+          fconcat_linux_arm64/fconcat_linux_arm64
+          fconcat_windows_amd64.exe/fconcat_windows_amd64.exe
+          fconcat_darwin_amd64/fconcat_darwin_amd64
+          fconcat_darwin_arm64/fconcat_darwin_arm64
+        draft: false
+        prerelease: false
+        
+  # Cleanup artifacts
+  cleanup:
+    needs: [build, release]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Delete artifacts
+      uses: geekyeggo/delete-artifact@v2
+      continue-on-error: true
+      with:
+        name: |
+          fconcat_linux_amd64
+          fconcat_linux_arm64
+          fconcat_windows_amd64.exe
+          fconcat_darwin_amd64
+          fconcat_darwin_arm64
+        useGlob: true

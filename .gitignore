@@ -1,0 +1,30 @@
+# Build outputs
+fconcat
+fconcat.exe
+*.o
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test outputs
+out.txt
+*.txt
+
+fconcat
+fconcat.exe
+*.o
+bench_fconcat
+
+# IDE files
+// ...existing code...
+# Test outputs
+out.txt
+*.txt
+benchmarks/*.tmp
+
