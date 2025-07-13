@@ -23,7 +23,7 @@
 
 #include "concat.h"
 
-#define FCONCAT_VERSION "2.0.0"
+#define FCONCAT_VERSION "0.0.1"
 #define FCONCAT_COPYRIGHT "Copyright (c) 2025 Soroush Khosravi Dehaghi"
 
 static int is_verbose()
