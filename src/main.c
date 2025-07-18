@@ -1,3 +1,4 @@
+// File: src/main.c
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
@@ -10,12 +11,12 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <signal.h>
 
 #ifdef _WIN32
 #include <windows.h>
-#include <libgen.h>  // For basename on MinGW
+#include <libgen.h>
 #define PATH_MAX 260
-// Case-insensitive string comparison for Windows
 #define strnicmp _strnicmp
 #else
 #include <limits.h>
@@ -23,13 +24,33 @@
 
 #include "concat.h"
 
-#define FCONCAT_VERSION "0.0.2"
+#define FCONCAT_VERSION "0.1.0"
 #define FCONCAT_COPYRIGHT "Copyright (c) 2025 Soroush Khosravi Dehaghi"
 
 static int is_verbose()
 {
     const char *env = getenv("FCONCAT_VERBOSE");
     return env && (strcmp(env, "1") == 0 || strcasecmp(env, "true") == 0);
+}
+
+// Global variables for signal handling
+#ifdef WITH_PLUGINS
+static PluginManager *g_plugin_manager = NULL;
+#endif
+static int g_interactive_mode = 0;
+
+// Signal handler for graceful shutdown
+static void signal_handler(int signum)
+{
+    printf("\n🔌 Received signal %d, shutting down plugins...\n", signum);
+#ifdef WITH_PLUGINS
+    if (g_plugin_manager)
+    {
+        destroy_plugin_manager(g_plugin_manager);
+        g_plugin_manager = NULL;
+    }
+#endif
+    exit(EXIT_SUCCESS);
 }
 
 // Get the basename (filename) part of a path
@@ -49,12 +70,14 @@ static char *get_absolute_path(const char *path, char *abs_path, size_t abs_path
 #ifdef _WIN32
     // Use GetFullPathName on Windows
     DWORD result = GetFullPathNameA(path, (DWORD)abs_path_size, abs_path, NULL);
-    if (result > 0 && result < abs_path_size) {
+    if (result > 0 && result < abs_path_size)
+    {
         return abs_path;
     }
 #else
     // Use realpath on Unix-like systems
-    if (realpath(path, abs_path)) {
+    if (realpath(path, abs_path))
+    {
         return abs_path;
     }
 #endif
@@ -76,19 +99,23 @@ static char *get_relative_path(const char *base_dir, const char *target_path)
 
 #ifdef _WIN32
     // Normalize paths to use forward slashes for consistency
-    for (char *p = abs_base; *p; p++) {
-        if (*p == '\\') *p = '/';
+    for (char *p = abs_base; *p; p++)
+    {
+        if (*p == '\\')
+            *p = '/';
     }
-    for (char *p = abs_target; *p; p++) {
-        if (*p == '\\') *p = '/';
+    for (char *p = abs_target; *p; p++)
+    {
+        if (*p == '\\')
+            *p = '/';
     }
-    
-    // Windows path comparison should be case-insensitive
-    #define PATH_COMPARE strnicmp
-    #define PATH_COMPARE_N strnicmp
+
+// Windows path comparison should be case-insensitive
+#define PATH_COMPARE strnicmp
+#define PATH_COMPARE_N strnicmp
 #else
-    #define PATH_COMPARE strcmp
-    #define PATH_COMPARE_N strncmp
+#define PATH_COMPARE strcmp
+#define PATH_COMPARE_N strncmp
 #endif
 
     size_t base_len = strlen(abs_base);
@@ -110,7 +137,7 @@ static char *get_relative_path(const char *base_dir, const char *target_path)
 
 void print_header()
 {
-    printf("fconcat v%s - Multi-threaded file concatenator with streaming output\n", FCONCAT_VERSION);
+    printf("fconcat v%s - File concatenator with plugin engine\n", FCONCAT_VERSION);
     printf("%s\n", FCONCAT_COPYRIGHT);
     printf("==================================================================\n\n");
 }
@@ -123,8 +150,7 @@ void print_usage(const char *program_name)
             "\n"
             "Description:\n"
             "  fconcat recursively scans <input_directory>, writes a tree view of its structure,\n"
-            "  and concatenates the contents of all files into <output_file> using multi-threading\n"
-            "  and streaming output for optimal performance.\n"
+            "  and concatenates the contents of all files into <output_file>.\n"
             "\n"
             "Options:\n"
             "  <input_directory>     Path to the directory to scan and concatenate.\n"
@@ -141,7 +167,12 @@ void print_usage(const char *program_name)
             "                        follow      - Follow symlinks with loop detection\n"
             "                        include     - Include symlink targets as files\n"
             "                        placeholder - Show symlinks as placeholders\n"
-            "  --threads <n>, -t <n> Number of worker threads (1-%d, default: %d).\n"
+#ifdef WITH_PLUGINS
+            "  --plugin <path>       Load a streaming plugin from the specified path.\n"
+            "                        Multiple plugins can be loaded and will be chained.\n"
+            "  --interactive         Keep plugins active after processing (for servers, etc.).\n"
+            "                        Press Enter or Ctrl+C to exit.\n"
+#endif
             "\n"
             "Environment:\n"
             "  FCONCAT_VERBOSE=1     Enable verbose logging to stderr for debugging.\n"
@@ -149,30 +180,24 @@ void print_usage(const char *program_name)
             "Examples:\n"
             "  %s ./src all.txt\n"
             "  %s ./project result.txt --exclude \"*.log\" \"build/*\" \"temp?.txt\"\n"
-            "  %s ./code output.txt --show-size --binary-placeholder --threads 8\n"
+            "  %s ./code output.txt --show-size --binary-placeholder\n"
             "  %s ./kernel out.txt --symlinks follow --exclude \"*.o\" \"*.ko\"\n"
-            "\n"
-            "Symbolic Link Handling:\n"
-            "  skip        - Safest option, ignores all symbolic links\n"
-            "  follow      - Follows symlinks but detects and prevents infinite loops\n"
-            "  include     - Includes symlink targets as regular files (no recursion)\n"
-            "  placeholder - Shows symlinks in structure but doesn't follow them\n"
-            "\n"
-            "Performance Features:\n"
-            "  - Multi-threaded directory traversal and file processing\n"
-            "  - Streaming output for constant memory usage\n"
-            "  - Hash-table based exclude pattern matching\n"
-            "  - Platform-optimized Unicode filename support\n"
-            "  - Intelligent binary file detection\n"
-            "  - Robust symbolic link handling with loop detection\n"
+#ifdef WITH_PLUGINS
+            "  %s ./src out.txt --plugin ./syntax_highlighter.so --plugin ./line_numbers.so\n"
+            "  %s ./server out.txt --plugin ./tcp_server.so --interactive\n"
+#endif
             "\n"
             "Exit Codes:\n"
             "  0   Success\n"
             "  1   Error (see message)\n"
             "\n"
             "For more information, visit: https://github.com/sonemaro/fconcat\n",
-            program_name, MAX_THREADS, DEFAULT_WORKER_THREADS,
-            program_name, program_name, program_name, program_name);
+            program_name, program_name, program_name, program_name, program_name
+#ifdef WITH_PLUGINS
+            ,
+            program_name, program_name
+#endif
+    );
 }
 
 int main(int argc, char *argv[])
@@ -206,10 +231,23 @@ int main(int argc, char *argv[])
     ExcludeList excludes;
     init_exclude_list(&excludes);
 
+#ifdef WITH_PLUGINS
+    PluginManager plugin_manager;
+    if (init_plugin_manager(&plugin_manager) != 0)
+    {
+        fprintf(stderr, "Error: Failed to initialize plugin manager\n");
+        free_exclude_list(&excludes);
+        return EXIT_FAILURE;
+    }
+
+    // Set up global plugin manager for signal handling
+    g_plugin_manager = &plugin_manager;
+#endif
+
     // Parse command line options
     int exclude_count = 0;
     int show_size = 0;
-    int num_threads = DEFAULT_WORKER_THREADS;
+    int interactive_mode = 0;
     BinaryHandling binary_handling = BINARY_SKIP;
     SymlinkHandling symlink_handling = SYMLINK_SKIP;
 
@@ -234,27 +272,37 @@ int main(int argc, char *argv[])
             if (is_verbose())
                 fprintf(stderr, "[fconcat] File size display enabled\n");
         }
-        else if (strcmp(argv[i], "--threads") == 0 || strcmp(argv[i], "-t") == 0)
+#ifdef WITH_PLUGINS
+        else if (strcmp(argv[i], "--plugin") == 0)
         {
             if (i + 1 < argc)
             {
-                num_threads = atoi(argv[++i]);
-                if (num_threads < 1 || num_threads > MAX_THREADS)
+                const char *plugin_path = argv[++i];
+                if (load_plugin(&plugin_manager, plugin_path) != 0)
                 {
-                    fprintf(stderr, "Error: Number of threads must be between 1 and %d\n", MAX_THREADS);
+                    fprintf(stderr, "Error: Failed to load plugin: %s\n", plugin_path);
+                    destroy_plugin_manager(&plugin_manager);
                     free_exclude_list(&excludes);
                     return EXIT_FAILURE;
                 }
                 if (is_verbose())
-                    fprintf(stderr, "[fconcat] Using %d worker threads\n", num_threads);
+                    fprintf(stderr, "[fconcat] Loaded plugin: %s\n", plugin_path);
             }
             else
             {
-                fprintf(stderr, "Error: --threads requires a number\n");
+                fprintf(stderr, "Error: --plugin requires a path\n");
+                destroy_plugin_manager(&plugin_manager);
                 free_exclude_list(&excludes);
                 return EXIT_FAILURE;
             }
         }
+        else if (strcmp(argv[i], "--interactive") == 0)
+        {
+            interactive_mode = 1;
+            if (is_verbose())
+                fprintf(stderr, "[fconcat] Interactive mode enabled\n");
+        }
+#endif
         else if (strcmp(argv[i], "--binary-skip") == 0)
         {
             binary_handling = BINARY_SKIP;
@@ -297,6 +345,9 @@ int main(int argc, char *argv[])
                 else
                 {
                     fprintf(stderr, "Error: Invalid symlink mode '%s'. Use: skip, follow, include, or placeholder\n", argv[i]);
+#ifdef WITH_PLUGINS
+                    destroy_plugin_manager(&plugin_manager);
+#endif
                     free_exclude_list(&excludes);
                     return EXIT_FAILURE;
                 }
@@ -306,6 +357,9 @@ int main(int argc, char *argv[])
             else
             {
                 fprintf(stderr, "Error: --symlinks requires a mode (skip, follow, include, placeholder)\n");
+#ifdef WITH_PLUGINS
+                destroy_plugin_manager(&plugin_manager);
+#endif
                 free_exclude_list(&excludes);
                 return EXIT_FAILURE;
             }
@@ -314,45 +368,53 @@ int main(int argc, char *argv[])
         {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             print_usage(argv[0]);
+#ifdef WITH_PLUGINS
+            destroy_plugin_manager(&plugin_manager);
+#endif
             free_exclude_list(&excludes);
             return EXIT_FAILURE;
         }
     }
 
-    // Auto-exclude output file with better path resolution
-    // Reuse existing abs_input and abs_output variables
-    
-    // Check if output file is inside input directory
+    // Auto-exclude output file
     int output_inside_input = 0;
-    
+
 #ifdef _WIN32
     // Normalize paths for comparison
-    for (char *p = abs_input; *p; p++) {
-        if (*p == '\\') *p = '/';
+    for (char *p = abs_input; *p; p++)
+    {
+        if (*p == '\\')
+            *p = '/';
     }
-    for (char *p = abs_output; *p; p++) {
-        if (*p == '\\') *p = '/';
+    for (char *p = abs_output; *p; p++)
+    {
+        if (*p == '\\')
+            *p = '/';
     }
     // Windows case-insensitive comparison
-    if (strnicmp(abs_output, abs_input, strlen(abs_input)) == 0) {
+    if (strnicmp(abs_output, abs_input, strlen(abs_input)) == 0)
+    {
         output_inside_input = 1;
     }
 #else
-    if (strncmp(abs_output, abs_input, strlen(abs_input)) == 0) {
+    if (strncmp(abs_output, abs_input, strlen(abs_input)) == 0)
+    {
         output_inside_input = 1;
     }
 #endif
 
-    if (output_inside_input) {
+    if (output_inside_input)
+    {
         // Add absolute path exclusion
         if (is_verbose())
             fprintf(stderr, "[fconcat] Auto-excluding output file by absolute path: %s\n", abs_output);
         add_exclude_pattern(&excludes, abs_output);
         exclude_count++;
-        
+
         // Add relative path exclusion
         char *relative_path = get_relative_path(input_dir, output_file);
-        if (relative_path) {
+        if (relative_path)
+        {
             if (is_verbose())
                 fprintf(stderr, "[fconcat] Auto-excluding output file by relative path: %s\n", relative_path);
             add_exclude_pattern(&excludes, relative_path);
@@ -360,7 +422,7 @@ int main(int argc, char *argv[])
             free(relative_path);
         }
     }
-    
+
     // Always exclude by basename as fallback
     const char *output_basename = get_filename(output_file);
     if (is_verbose())
@@ -377,9 +439,16 @@ int main(int argc, char *argv[])
         exclude_count++;
     }
 
+    // Set up signal handling for interactive mode
+    if (interactive_mode)
+    {
+        signal(SIGINT, signal_handler);
+        signal(SIGTERM, signal_handler);
+        g_interactive_mode = 1;
+    }
+
     printf("Input directory : %s\n", input_dir);
     printf("Output file     : %s\n", output_file);
-    printf("Worker threads  : %d\n", num_threads);
     printf("Binary handling : %s\n",
            binary_handling == BINARY_SKIP ? "skip" : binary_handling == BINARY_INCLUDE ? "include"
                                                                                        : "placeholder");
@@ -391,29 +460,32 @@ int main(int argc, char *argv[])
     {
         printf("Exclude patterns: %d patterns loaded\n", exclude_count);
     }
+#ifdef WITH_PLUGINS
+    if (plugin_manager.count > 0)
+    {
+        printf("Loaded plugins  : %d plugins active\n", plugin_manager.count);
+    }
+    if (interactive_mode)
+    {
+        printf("Interactive mode: enabled\n");
+    }
+#endif
     printf("\n");
 
     FILE *output = fopen(output_file, "wb");
     if (!output)
     {
         fprintf(stderr, "Error opening output file '%s': %s\n", output_file, strerror(errno));
+#ifdef WITH_PLUGINS
+        destroy_plugin_manager(&plugin_manager);
+#endif
         free_exclude_list(&excludes);
         return EXIT_FAILURE;
     }
 
-    // Initialize streaming output
-    StreamingOutput streaming_output;
-    if (init_streaming_output(&streaming_output, output) != 0)
-    {
-        fprintf(stderr, "Error initializing streaming output\n");
-        fclose(output);
-        free_exclude_list(&excludes);
-        return EXIT_FAILURE;
-    }
-
-    printf("🚀 Processing directory with %d threads...\n", num_threads);
+    printf("🚀 Processing directory...\n");
     if (is_verbose())
-        fprintf(stderr, "[fconcat] Starting multi-threaded processing...\n");
+        fprintf(stderr, "[fconcat] Starting processing...\n");
 
     // Create processing context
     ProcessingContext ctx = {
@@ -422,43 +494,33 @@ int main(int argc, char *argv[])
         .binary_handling = binary_handling,
         .symlink_handling = symlink_handling,
         .show_size = show_size,
-        .num_threads = num_threads,
-        .output = &streaming_output,
-        .pool = NULL};
+        .output_file = output,
+#ifdef WITH_PLUGINS
+        .plugin_manager = &plugin_manager,
+#endif
+        .interactive_mode = interactive_mode};
 
-    // Process directory with multi-threading
-    int result = process_directory_threaded(&ctx);
+    // Process directory
+    int result = process_directory(&ctx);
 
     if (result == 0)
     {
-        printf("✅ Directory structure processed successfully\n");
-        printf("📝 Finalizing output...\n");
-
-        // Signal that processing is complete
-        stream_output_finish(&streaming_output);
-
-        // Print statistics if verbose
-        if (ctx.pool && is_verbose())
-        {
-            print_processing_stats(ctx.pool);
-        }
+        printf("✅ Directory processed successfully\n");
     }
     else
     {
         fprintf(stderr, "❌ Error during processing\n");
     }
 
-    // Cleanup
-    destroy_streaming_output(&streaming_output);
-
     if (fclose(output) != 0)
     {
         fprintf(stderr, "Error closing output file: %s\n", strerror(errno));
+#ifdef WITH_PLUGINS
+        destroy_plugin_manager(&plugin_manager);
+#endif
         free_exclude_list(&excludes);
         return EXIT_FAILURE;
     }
-
-    free_exclude_list(&excludes);
 
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     double elapsed = (end_time.tv_sec - start_time.tv_sec) +
@@ -469,30 +531,40 @@ int main(int argc, char *argv[])
         printf("\n🎉 Success! Output written to '%s'\n", output_file);
         printf("⏱️  Processing time: %.3f seconds\n", elapsed);
 
-        if (ctx.pool)
+#ifdef WITH_PLUGINS
+        if (plugin_manager.count > 0)
         {
-            unsigned long files = atomic_load(&ctx.pool->files_processed);
-            unsigned long bytes = atomic_load(&ctx.pool->bytes_processed);
-            unsigned long symlinks = atomic_load(&ctx.pool->symlinks_processed);
-
-            if (files > 0)
-            {
-                printf("📊 Performance: %.0f files/sec, %.1f MB/sec\n",
-                       files / elapsed, (bytes / elapsed) / (1024 * 1024));
-            }
-            if (symlinks > 0)
-            {
-                printf("🔗 Symlinks: %lu processed\n", symlinks);
-            }
+            printf("🔌 Plugins: %d active\n", plugin_manager.count);
         }
+
+        // Interactive mode
+        if (interactive_mode)
+        {
+            printf("\n🔌 Entering interactive mode...\n");
+            printf("Plugins are active and ready for use.\n");
+            printf("Press Enter to exit, or Ctrl+C to force quit\n");
+
+            char buffer[256];
+            if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+            {
+                if (is_verbose())
+                    fprintf(stderr, "[fconcat] Input stream closed or error occurred\n");
+            }
+
+            printf("🔌 Shutting down plugins...\n");
+        }
+#endif
 
         printf("Thank you for using fconcat! 🚀\n");
         if (is_verbose())
             fprintf(stderr, "[fconcat] Done.\n");
-        return EXIT_SUCCESS;
     }
-    else
-    {
-        return EXIT_FAILURE;
-    }
+
+    // Cleanup plugins
+#ifdef WITH_PLUGINS
+    destroy_plugin_manager(&plugin_manager);
+#endif
+    free_exclude_list(&excludes);
+
+    return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
