@@ -147,10 +147,10 @@ plugins-enabled:
 windows: windows64
 
 windows64:
-	$(MAKE) CROSS_COMPILE=mingw64 TARGET=fconcat-win64 clean all
+	$(MAKE) CROSS_COMPILE=mingw64 TARGET=fconcat-win64.exe clean all
 
 windows32:
-	$(MAKE) CROSS_COMPILE=mingw32 TARGET=fconcat-win32 clean all
+	$(MAKE) CROSS_COMPILE=mingw32 TARGET=fconcat-win32.exe clean all
 
 windows-all: windows64 windows32
 
@@ -249,7 +249,7 @@ plugins-clean:
 	@echo "Plugin modules cleaned"
 
 clean-all: clean plugins-clean bench-clean
-	$(RM) fconcat-win64.exe fconcat-win32.exe
+	$(RM) fconcat-win64.exe fconcat-win32.exe fconcat-win64 fconcat-win32
 
 install:
 	mkdir -p $(DESTDIR)/usr/local/bin

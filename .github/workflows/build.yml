@@ -79,7 +79,8 @@ jobs:
     - name: Modify Makefile for macOS
       if: matrix.platform == 'darwin'
       run: |
-        sed -i.bak 's/-static//' Makefile
+        # macOS uses BSD sed, which requires an argument after -i
+        sed -i '' 's/-static//' Makefile || sed -i.bak 's/-static//' Makefile
       shell: bash
     
     
@@ -94,7 +95,7 @@ jobs:
             mv fconcat-win64.exe fconcat.exe
           else
             echo "Error: Expected fconcat-win64.exe not found"
-            ls -la *.exe || echo "No .exe files found"
+            ls -la fconcat* || echo "No fconcat files found"
             exit 1
           fi
         elif [ "${{ matrix.cross_compile }}" = "aarch64-linux-gnu-" ]; then
